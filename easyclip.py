@@ -10,8 +10,13 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gtk, Gdk, Gio, GLib, GdkPixbuf, Pango
+try:
+    gi.require_version("XApp", "1.0")
+    from gi.repository import XApp  # Cinnamon/MATE/Xfce tray icon
+except (ValueError, ImportError):
+    XApp = None
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 APP_ID = "dev.tacticdev.easyclip"
 DATA_DIR = os.path.join(GLib.get_user_data_dir(), "easyclip")
 IMG_DIR = os.path.join(DATA_DIR, "images")
@@ -19,7 +24,8 @@ HISTORY = os.path.join(DATA_DIR, "history.json")
 CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "easyclip")
 CONFIG = os.path.join(CONFIG_DIR, "config.json")
 AUTOSTART = os.path.join(GLib.get_user_config_dir(), "autostart", "easyclip.desktop")
-DEFAULTS = {"max_items": 25, "save_images": True, "auto_paste": True}
+DEFAULTS = {"max_items": 25, "save_images": True, "auto_paste": True, "show_tray": True}
+TRAY_ITEMS = 8
 MAX_TEXT = 200_000          # characters kept per item
 MAX_IMAGE_PIXELS = 4096 * 4096
 TERMINALS = ("gnome-terminal", "xfce4-terminal", "tilix", "terminator", "kitty", "alacritty", "konsole",
@@ -272,7 +278,71 @@ class App(Gtk.Application):
         self.watcher = Watcher(self)
         css = Gtk.CssProvider(); css.load_from_data(CSS)
         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.tray = None
         self.build()
+        self.setup_tray()
+        GLib.timeout_add_seconds(30, lambda: (self.update_tray(), True)[-1])  # keep "paused" state fresh
+
+    # ---- tray icon ----
+    def setup_tray(self):
+        if XApp is None:
+            return
+        self.tray = XApp.StatusIcon()
+        self.tray.set_name("easyclip")
+        self.tray.connect("activate", lambda *_: self.toggle())
+        self.tray_menu = Gtk.Menu()
+        self.tray.set_secondary_menu(self.tray_menu)
+        self.tray.set_visible(self.cfg["show_tray"])
+        self.update_tray()
+
+    def update_tray(self):
+        if not self.tray:
+            return
+        n = len(self.store.items)
+        paused = time.time() < self.watcher.paused_until
+        self.tray.set_icon_name("edit-paste-symbolic")
+        self.tray.set_tooltip_text(
+            ("Clipboard paused · " if paused else "Clipboard · ") +
+            (f"{n} item{'s' if n != 1 else ''}" if n else "empty") + " · Super+V")
+        for c in self.tray_menu.get_children(): c.destroy()
+        def item(label, cb, sensitive=True):
+            it = Gtk.MenuItem(label=label); it.set_sensitive(sensitive)
+            it.connect("activate", lambda *_: cb()); self.tray_menu.append(it)
+        items = sorted(self.store.items, key=lambda i: (not i["pinned"],))[:TRAY_ITEMS]
+        if not items:
+            item("Nothing copied yet", lambda: None, False)
+        for it in items:
+            if it["kind"] == "text":
+                t = " ".join(it["text"].split())
+                label = (t[:48] + "…") if len(t) > 48 else t
+            else:
+                label = f"Image {it.get('size', '')}"
+            item(("★ " if it["pinned"] else "") + label, lambda it=it: self.paste_from_tray(it))
+        self.tray_menu.append(Gtk.SeparatorMenuItem())
+        item("Open clipboard   (Super+V)", self.toggle)
+        if paused:
+            item("Resume saving copies", self.resume)
+        else:
+            item("Pause for 5 minutes", self.pause)
+        item("Clear history…", lambda: (self.toggle() if not self.win.get_visible() else None, self.confirm_clear()),
+             any(not i["pinned"] for i in self.store.items))
+        self.tray_menu.append(Gtk.SeparatorMenuItem())
+        item("Quit", self.quit)
+        self.tray_menu.show_all()
+
+    def paste_from_tray(self, it):
+        # The tray menu doesn't take window focus, so the active window is where the user was.
+        self.prev_window = run("xdotool", "getactivewindow") or None
+        self.paste(it)
+
+    def pause(self):
+        self.watcher.paused_until = time.time() + 300
+        self.flash("Paused for 5 minutes"); self.update_tray()
+        GLib.timeout_add_seconds(301, lambda: (self.update_tray(), False)[-1])
+
+    def resume(self):
+        self.watcher.paused_until = 0
+        self.flash("Saving copies again"); self.update_tray()
 
     def do_command_line(self, cl):
         args = cl.get_arguments()[1:]
@@ -360,18 +430,19 @@ class App(Gtk.Application):
                self.cfg["auto_paste"], lambda on: self.set_cfg("auto_paste", on))
         sw_row(1, "Keep images", None, self.cfg["save_images"], lambda on: self.set_cfg("save_images", on))
         sw_row(2, "Start at login", "Needed for history to keep filling up.", os.path.exists(AUTOSTART), self.set_autostart)
-        g.attach(Gtk.Label(label="Remember", xalign=0), 0, 3, 1, 1)
+        sw_row(3, "Tray icon", "Right-click it for recent items.", self.cfg["show_tray"],
+               lambda on: (self.set_cfg("show_tray", on), self.tray and self.tray.set_visible(on)))
+        g.attach(Gtk.Label(label="Remember", xalign=0), 0, 4, 1, 1)
         spin = Gtk.SpinButton.new_with_range(5, 500, 5); spin.set_value(self.cfg["max_items"])
         spin.connect("value-changed", lambda s: (self.set_cfg("max_items", int(s.get_value())), self.store._trim(), self.refresh()))
-        g.attach(spin, 1, 3, 1, 1)
+        g.attach(spin, 1, 4, 1, 1)
         pause = Gtk.Button(label="Pause for 5 minutes")
         pause.set_tooltip_text("Don't save anything you copy for the next 5 minutes")
-        pause.connect("clicked", lambda *_: (setattr(self.watcher, "paused_until", time.time() + 300), pop.popdown(),
-                                             self.flash("Paused for 5 minutes")))
-        g.attach(pause, 0, 4, 2, 1)
+        pause.connect("clicked", lambda *_: (self.pause(), pop.popdown()))
+        g.attach(pause, 0, 5, 2, 1)
         ver = Gtk.Label(xalign=0); ver.set_markup(f"<small>EasyClip {VERSION} · Super+V opens this panel</small>")
         ver.get_style_context().add_class("dim-label")
-        g.attach(ver, 0, 5, 2, 1)
+        g.attach(ver, 0, 6, 2, 1)
         g.show_all(); pop.add(g)
         return pop
 
@@ -435,6 +506,7 @@ class App(Gtk.Application):
             self.list.add(Row(self, it))
         self.list.show_all()
         self.apply_filter()
+        self.update_tray()
 
     def apply_filter(self):
         self.list.invalidate_filter()

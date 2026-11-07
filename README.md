@@ -1,4 +1,4 @@
-# EasyClip 1.0.0
+# EasyClip 1.1.0
 
 Simple clipboard history for Linux desktops (GTK3, X11). Press **Super+V**.
 
@@ -7,7 +7,8 @@ Simple clipboard history for Linux desktops (GTK3, X11). Press **Super+V**.
 - ☆ Pin items you reuse; they stay at the top and survive "Clear history".
 - Never saves secrets copied from password managers (KeePassXC, Bitwarden… via `x-kde-passwordManagerHint`).
 - Keeps your last copy available after the app you copied from closes.
-- ⚙: paste right away on/off, keep images, start at login, history size, pause for 5 minutes.
+- Tray icon: left-click opens the panel, right-click lists the 8 newest items to paste, pause, clear, quit.
+- ⚙: tray icon on/off, paste right away on/off, keep images, start at login, history size, pause for 5 minutes.
 
 Run: `python3 easyclip.py` (`--hidden` to start in the background, `--show` to toggle the panel, `--quit`).
 History lives in `~/.local/share/easyclip/`, settings in `~/.config/easyclip/config.json`.
