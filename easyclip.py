@@ -16,8 +16,38 @@ try:
 except (ValueError, ImportError):
     XApp = None
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 APP_ID = "dev.tacticdev.easyclip"
+
+# --- shared by the TACTICDEV Easy* tray apps -------------------------------------------------
+# Only one tray panel open at a time: opening one tells the others (over the session bus) to close.
+TRAY_IFACE, TRAY_PATH = "dev.tacticdev.Tray", "/dev/tacticdev/tray"
+
+def tray_announce():
+    try:
+        Gio.bus_get_sync(Gio.BusType.SESSION, None).emit_signal(
+            None, TRAY_PATH, TRAY_IFACE, "Opened", GLib.Variant("(s)", (APP_ID,)))
+    except GLib.Error:
+        pass
+
+def tray_listen(hide):
+    Gio.bus_get_sync(Gio.BusType.SESSION, None).signal_subscribe(
+        None, TRAY_IFACE, "Opened", TRAY_PATH, None, Gio.DBusSignalFlags.NONE,
+        lambda c, s, p, i, n, params: params.unpack()[0] != APP_ID and hide())
+
+def add_restart_action(app):
+    """Self-restart that stays inside the desktop session (system permissions depend on it).
+    Trigger: gdbus call --session -d <APP_ID> -o /<APP_ID with dots as slashes>
+             -m org.freedesktop.Application.ActivateAction restart [] {}"""
+    act = Gio.SimpleAction.new("restart", None)
+    def restart(*_):
+        script = (f"while kill -0 {os.getpid()} 2>/dev/null; do sleep 0.2; done; "
+                  f"exec {sys.executable} {os.path.abspath(__file__)} --hidden")
+        subprocess.Popen(["sh", "-c", script])
+        app.quit()
+    act.connect("activate", restart)
+    app.add_action(act)
+# ---------------------------------------------------------------------------------------------
 DATA_DIR = os.path.join(GLib.get_user_data_dir(), "easyclip")
 IMG_DIR = os.path.join(DATA_DIR, "images")
 HISTORY = os.path.join(DATA_DIR, "history.json")
@@ -281,6 +311,8 @@ class App(Gtk.Application):
         self.tray = None
         self.build()
         self.setup_tray()
+        tray_listen(lambda: self.win.get_visible() and self.win.hide())
+        add_restart_action(self)
         GLib.timeout_add_seconds(30, lambda: (self.update_tray(), True)[-1])  # keep "paused" state fresh
 
     # ---- tray icon ----
@@ -450,6 +482,7 @@ class App(Gtk.Application):
     def toggle(self):
         if self.win.get_visible():
             self.win.hide(); return
+        tray_announce()
         # Remember where the user was so we can paste back into it.
         self.prev_window = run("xdotool", "getactivewindow") or None
         self.refresh()

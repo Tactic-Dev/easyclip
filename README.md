@@ -1,4 +1,4 @@
-# EasyClip 1.1.0
+# EasyClip 1.2.0
 
 Simple clipboard history for Linux desktops (GTK3, X11). Press **Super+V**.
 
