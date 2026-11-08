@@ -16,7 +16,7 @@ try:
 except (ValueError, ImportError):
     XApp = None
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 APP_ID = "dev.tacticdev.easyclip"
 
 # --- shared by the TACTICDEV Easy* tray apps -------------------------------------------------
