@@ -70,6 +70,17 @@ CSS = b"""
 .clip-section { font-weight: bold; font-size: 9pt; color: alpha(currentColor, 0.6); padding: 10px 14px 4px; }
 .clip-tool { padding: 2px 4px; min-height: 0; min-width: 0; }
 row.easyclip-last { border-bottom: 1px solid alpha(currentColor, 0.12); }
+/* tray-panel look shared with EasySound / EasyNet / EasyPower */
+window.easyclip { background-color: transparent; }
+.ec-card { background-color: #2c2c2c; color: #ffffff; border: 1px solid rgba(255,255,255,0.08);
+           border-radius: 18px; padding: 14px 14px 10px; }
+.ec-title { font-weight: bold; font-size: 11pt; }
+.ec-iconbtn { padding: 4px; min-width: 0; min-height: 0; border-radius: 10px; }
+.ec-listwrap { background-color: rgba(255,255,255,0.05); border-radius: 14px; }
+.ec-listwrap list, .ec-listwrap row { background-color: transparent; }
+.ec-listwrap row:selected { background-color: rgba(75,144,237,0.18); }
+.ec-listwrap row:hover { background-color: rgba(255,255,255,0.06); }
+.ec-link { padding: 6px 10px; border-radius: 10px; }
 """
 
 
@@ -389,28 +400,37 @@ class App(Gtk.Application):
 
     # ---- window ----
     def build(self):
-        w = Gtk.ApplicationWindow(application=self, title="Clipboard")
-        w.set_default_size(440, 560)
+        # Same rounded tray panel as EasySound/EasyNet/EasyPower. Kept as a (borderless) dialog rather
+        # than a popup-menu window so the search box gets keyboard focus.
+        w = Gtk.ApplicationWindow(application=self, title="Clipboard", decorated=False, resizable=False)
+        w.get_style_context().add_class("easyclip")
+        vis = w.get_screen().get_rgba_visual()
+        if vis: w.set_visual(vis)
+        w.set_app_paintable(True)
         w.set_icon_name("edit-paste")
-        w.set_keep_above(True); w.set_skip_taskbar_hint(True)
+        w.set_keep_above(True); w.set_skip_taskbar_hint(True); w.set_skip_pager_hint(True)
         w.set_type_hint(Gdk.WindowTypeHint.DIALOG)
         w.connect("delete-event", lambda *_: (w.hide(), True)[-1])
         w.connect("key-press-event", self.on_key)
         w.connect("focus-out-event", self.on_focus_out)
-        hb = Gtk.HeaderBar(show_close_button=True, title="Clipboard")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=8)
+        box.get_style_context().add_class("ec-card"); box.set_size_request(380, -1)
+        head = Gtk.Box(spacing=8)
+        t = Gtk.Label(label="Clipboard", xalign=0); t.get_style_context().add_class("ec-title")
         gear = Gtk.MenuButton(relief=Gtk.ReliefStyle.NONE, tooltip_text="Settings")
+        gear.get_style_context().add_class("ec-iconbtn")
         gear.add(Gtk.Image.new_from_icon_name("emblem-system-symbolic", Gtk.IconSize.BUTTON))
         gear.set_popover(self.settings_popover(gear))
-        hb.pack_start(gear)
-        w.set_titlebar(hb)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=12)
+        head.pack_start(t, True, True, 0); head.pack_end(gear, False, False, 0)
+        box.pack_start(head, False, False, 0)
         self.search = Gtk.SearchEntry(placeholder_text="Search")
         self.search.connect("search-changed", lambda *_: self.apply_filter())
         self.search.connect("activate", lambda *_: self.paste_first())
         box.pack_start(self.search, False, False, 0)
-        sc = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
-        frame = Gtk.Frame()
+        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, min_content_height=380, max_content_height=380)
+        sc.get_style_context().add_class("ec-listwrap")
+        frame = Gtk.Box()
         self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.BROWSE, activate_on_single_click=True)
         self.list.set_name("easyclip-list")
         self.list.connect("row-activated", lambda _l, row: self.paste(row.item))
@@ -420,12 +440,13 @@ class App(Gtk.Application):
                                justify=Gtk.Justification.CENTER, margin=40)
         self.empty.get_style_context().add_class("dim-label")
         self.list.set_placeholder(self.empty)
-        frame.add(self.list); sc.add(frame)
+        frame.pack_start(self.list, True, True, 0); sc.add(frame)
         box.pack_start(sc, True, True, 0)
         foot = Gtk.Box(spacing=8)
         self.hint = Gtk.Label(xalign=0); self.hint.get_style_context().add_class("dim-label")
         self.hint.set_markup("<small>Enter or click pastes · Esc closes</small>")
-        clear = Gtk.Button(label="Clear history"); clear.connect("clicked", lambda *_: self.confirm_clear())
+        clear = Gtk.Button(label="Clear history", relief=Gtk.ReliefStyle.NONE)
+        clear.get_style_context().add_class("ec-link"); clear.connect("clicked", lambda *_: self.confirm_clear())
         foot.pack_start(self.hint, True, True, 0); foot.pack_end(clear, False, False, 0)
         box.pack_start(foot, False, False, 0)
         w.add(box)
@@ -487,12 +508,21 @@ class App(Gtk.Application):
         self.prev_window = run("xdotool", "getactivewindow") or None
         self.refresh()
         self.search.set_text("")
-        self.win.set_position(Gtk.WindowPosition.MOUSE)
         self.win.show_all()
+        self.place_near_pointer()
         self.win.present_with_time(Gtk.get_current_event_time() or int(time.time()))
         self.search.grab_focus()
         first = self.list.get_row_at_index(0)
         if first: self.list.select_row(first)
+
+    def place_near_pointer(self):
+        disp = Gdk.Display.get_default()
+        _s, x, y = disp.get_default_seat().get_pointer().get_position()
+        mon = disp.get_monitor_at_point(x, y).get_workarea()
+        ww, wh = self.win.get_size()
+        nx = min(max(mon.x + 8, x - ww // 2), mon.x + mon.width - ww - 8)
+        ny = y - wh - 12 if y - wh - 12 > mon.y else y + 12
+        self.win.move(nx, min(max(mon.y + 8, ny), mon.y + mon.height - wh - 8))
 
     def on_focus_out(self, *_):
         # Behave like a popup: clicking elsewhere closes it (but not while the settings popover is open).
